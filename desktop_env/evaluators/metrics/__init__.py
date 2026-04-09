@@ -154,6 +154,14 @@ from .vscode import (
     check_html_background_image,
     compare_zip_files
 )
+from .android import (
+    check_app_launched,
+    check_ui_element_exists,
+    check_text_visible,
+    exact_match as android_exact_match,
+    contains_match,
+    check_screen_on
+)
 
 
 def infeasible():

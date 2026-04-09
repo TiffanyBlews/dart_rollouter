@@ -44,5 +44,10 @@ def create_vm_manager_and_provider(provider_name: str, region: str, use_proxy: b
         from desktop_env.providers.volcengine.manager import VolcengineVMManager
         from desktop_env.providers.volcengine.provider import VolcengineProvider
         return VolcengineVMManager(), VolcengineProvider()
+    elif provider_name == "android_docker":
+        print("Using android_docker provider")
+        from desktop_env.providers.android.manager import AndroidVMManager
+        from desktop_env.providers.android.provider import AndroidProvider
+        return AndroidVMManager(), AndroidProvider(region)
     else:
         raise NotImplementedError(f"{provider_name} not implemented!")

@@ -34,12 +34,13 @@ def pil_to_base64(img_bytes: bytes) -> str:
 @ray.remote
 class TrajectoryRunnerActor:
     def __init__(self, task_info: Dict[str, Any], runner_cfg):
-        
+
         # --- load config ---
         self.runner_cfg = runner_cfg
         self.max_images = self.runner_cfg.max_images
         self.max_tests = self.runner_cfg.max_texts
         self.max_steps = self.runner_cfg.max_steps
+        self.action_space = runner_cfg.env.action_space if hasattr(runner_cfg, 'env') and hasattr(runner_cfg.env, 'action_space') else "pyautogui"
         # self.save_img_pt = self.runner_cfg.save_img_pt
         # self.rollout_n = self.runner_cfg.rollout_n
 
@@ -552,7 +553,14 @@ class TrajectoryRunnerActor:
     
     
     def _parse(self, response, image_size):
-                
+
+        # For Android, use Android-specific action parsing
+        if self.action_space == "android":
+            from src.utils.android_utils import parse_response_to_android_action
+            action_code = parse_response_to_android_action(response, image_size)
+            logger.info(f"[{self.trace_id}] Parse Android action - task_id: {self.task_id}, action: {action_code}")
+            return action_code
+
         # Parse the action
         parsed_responses = parse_action_to_structure_output(
             response,
@@ -572,9 +580,9 @@ class TrajectoryRunnerActor:
             image_width=image_size[0],
             input_swap=False  # TODO: Make this configurable
         )
-        
+
         logger.info(f"[{self.trace_id}] Parse action code - task_id: {self.task_id}, action: {action_code}")
-        
+
         return action_code
     
     

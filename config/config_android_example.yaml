@@ -1,0 +1,70 @@
+# Android environment configuration for DART-GUI
+# Based on config_example.yaml with Android-specific modifications
+
+task:
+  task_file: "evaluation_examples/trainset_android.json"
+  osworld_root: "evaluation_examples/examples"
+  resume: False
+
+storage:
+  root: "results/android_pass1"
+
+model:
+  ckpt_path: &default_ckpt_path "ByteDance-Seed/UI-TARS-1.5"
+  replicas: 2          # Fewer replicas due to Android emulator resource usage
+  base_port: 8000
+  host: &service_host "0.0.0.0"
+  service_port: &service_port 15959
+  service_endpoint: "http://0.0.0.0:15959"
+  save_local: True
+
+  vllm_params:
+    gpu_memory_utilization: 0.9
+
+coordinator:
+  max_concurrent_envs: 5   # Reduced for Android - each emulator uses more resources
+  max_task_queue_size: 100
+  rollout_n: &rollout_n 4  # Fewer rollouts per task
+
+runner:
+  max_steps: 30
+  max_images: 5
+  max_texts: 35
+  write_to_mysql: True
+  rollout_n: *rollout_n
+
+  env:
+    max_retries: 3
+    action_space: "android"        # Android action space
+    screen_size: (1080, 1920)       # Typical Android portrait resolution
+    headless: False                 # Android emulators need display
+    os_type: "Android"              # Key: distinguishes from Ubuntu
+    require_a11y_tree: False        # Android uses ui_hierarchy instead
+    provider_name: "android_docker" # New Android provider
+
+    # Android-specific settings
+    android:
+      emulator_device: "Samsung Galaxy S10"  # Or other supported device
+      appium_port: 4723
+      adb_port: 5554
+      vnc_port: 6080
+
+  model_pool:
+    timeout: 100
+    retries: 10
+    backoff: 2
+    frequency_penalty: 1
+    temperature: 0.7
+    top_p: 1
+    max_tokens: 500
+    seed: 1
+    ckpt_path: *default_ckpt_path
+    logprobs: True
+    return_tokens_as_token_ids: True
+
+mysql:
+  username: "dart_rollouter"
+  password: "password"
+  host: "0.0.0.0"
+  port: 3306
+  database: "dart_database"

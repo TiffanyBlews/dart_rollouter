@@ -159,7 +159,7 @@ class DesktopEnv(gym.Env):
         # Track whether environment has been used (step/setup) to optimize snapshot revert
         # docker, aws, gcp, azure are always unused as the emulator starts from a clean state
         # vmware, virtualbox are always used as the emulator starts from a dirty state
-        if self.provider_name in {"docker", "docker_server", "aws", "gcp", "azure", "aliyun", "volcengine"}:
+        if self.provider_name in {"docker", "docker_server", "aws", "gcp", "azure", "aliyun", "volcengine", "android_docker"}:
             self.is_environment_used = False
         elif self.provider_name in {"vmware", "virtualbox"}:
             self.is_environment_used = True
@@ -187,7 +187,7 @@ class DesktopEnv(gym.Env):
 
         # mode: human or machine
         self.instruction = None
-        assert action_space in ["computer_13", "pyautogui", "claude_computer_use", "autoglm_computer_use"]
+        assert action_space in ["computer_13", "pyautogui", "claude_computer_use", "autoglm_computer_use", "android"]
         self.action_space = action_space  # todo: refactor it to the ActType
 
         # episodic stuffs, like counters, will be updated or reset
@@ -205,14 +205,39 @@ class DesktopEnv(gym.Env):
             # Get the ip from the virtual machine, and setup the controller
             vm_ip_ports = self.provider.get_ip_address(self.path_to_vm).split(':')
             self.vm_ip = vm_ip_ports[0]
-            # Get the ports from the virtual machine (for Docker provider only)
-            if len(vm_ip_ports) > 1:
-                self.server_port = int(vm_ip_ports[1])
-                self.chromium_port = int(vm_ip_ports[2])
-                self.vnc_port = int(vm_ip_ports[3])
-                self.vlc_port = int(vm_ip_ports[4])
-            self.controller = PythonController(vm_ip=self.vm_ip, server_port=self.server_port)
-            self.setup_controller = SetupController(vm_ip=self.vm_ip, server_port=self.server_port, chromium_port=self.chromium_port, vlc_port=self.vlc_port, cache_dir=self.cache_dir_base, client_password=self.client_password, screen_width=self.screen_width, screen_height=self.screen_height)
+
+            # Handle Android environment
+            if self.os_type.lower() == "android":
+                # Android returns: container_ip:adb_port:appium_port:vnc_port
+                self.adb_port = int(vm_ip_ports[1]) if len(vm_ip_ports) > 1 else 5554
+                self.appium_port = int(vm_ip_ports[2]) if len(vm_ip_ports) > 2 else 4723
+                self.vnc_port = int(vm_ip_ports[3]) if len(vm_ip_ports) > 3 else 6080
+
+                # Lazy import to avoid OpenSSL compatibility issues
+                from desktop_env.controllers.android_adb import AndroidADBController
+                device_id = f"emulator-{self.adb_port}"
+                # Pass container name if provider has it
+                docker_container = getattr(self.provider, 'container_name', None)
+                self.controller = AndroidADBController(
+                    vm_ip=self.vm_ip,
+                    adb_port=self.adb_port,
+                    device_id=device_id,
+                    docker_container=docker_container
+                )
+                logger.info(f"Android controller initialized with device_id: {device_id}, docker_container: {docker_container}")
+                # Android doesn't use SetupController
+                self.setup_controller = None
+            else:
+                # Get the ports from the virtual machine (for Docker provider only)
+                if len(vm_ip_ports) > 1:
+                    self.server_port = int(vm_ip_ports[1])
+                    self.chromium_port = int(vm_ip_ports[2])
+                    self.vnc_port = int(vm_ip_ports[3])
+                    self.vlc_port = int(vm_ip_ports[4])
+                self.controller = PythonController(vm_ip=self.vm_ip, server_port=self.server_port)
+                # Lazy import to avoid OpenSSL compatibility issues
+                from desktop_env.controllers.setup import SetupController
+                self.setup_controller = SetupController(vm_ip=self.vm_ip, server_port=self.server_port, chromium_port=self.chromium_port, vlc_port=self.vlc_port, cache_dir=self.cache_dir_base, client_password=self.client_password, screen_width=self.screen_width, screen_height=self.screen_height)
 
         except Exception as e:
             try:
@@ -282,9 +307,18 @@ class DesktopEnv(gym.Env):
                     # If using proxy and proxy is enabled, set up the proxy configuration
                     self.setup_controller._proxy_setup(self.client_password)
                 self._set_task_info(task_config)
-                self.setup_controller.reset_cache_dir(self.cache_dir)
-                logger.info("Setting up environment...")
-                success = self.setup_controller.setup(self.config, task_config.get("proxy", False) and self.enable_proxy)
+
+                # For Android, use AndroidSetupController
+                if self.os_type.lower() == "android":
+                    from desktop_env.controllers.android_setup import create_android_setup_controller
+                    logger.info("Setting up Android environment...")
+                    android_setup = create_android_setup_controller(self.controller)
+                    success = android_setup.setup(self.config)
+                else:
+                    self.setup_controller.reset_cache_dir(self.cache_dir)
+                    logger.info("Setting up environment...")
+                    success = self.setup_controller.setup(self.config, task_config.get("proxy", False) and self.enable_proxy)
+
                 if success:
                     # Mark environment as used when setup is successfully executed
                     if self.config:  # Only mark as used if there were actual setup operations
@@ -308,12 +342,23 @@ class DesktopEnv(gym.Env):
     def _get_obs(self):
         # We provide screenshot, accessibility_tree (optional), terminal (optional), and instruction.
         # can be customized and scaled
-        return {
-            "screenshot": self.controller.get_screenshot(),
-            "accessibility_tree": self.controller.get_accessibility_tree() if self.require_a11y_tree else None,
-            "terminal": self.controller.get_terminal_output() if self.require_terminal else None,
-            "instruction": self.instruction
-        }
+        if self.os_type.lower() == "android":
+            # For Android, use ui_hierarchy as accessibility_tree and get platform_info
+            ui_hierarchy = self.controller.get_ui_hierarchy() if self.require_a11y_tree else None
+            platform_info = self.controller.get_platform_info() if hasattr(self.controller, 'get_platform_info') else {}
+            return {
+                "screenshot": self.controller.get_screenshot(),
+                "accessibility_tree": ui_hierarchy,  # Android ui_hierarchy serves as accessibility_tree
+                "platform_info": platform_info,
+                "instruction": self.instruction
+            }
+        else:
+            return {
+                "screenshot": self.controller.get_screenshot(),
+                "accessibility_tree": self.controller.get_accessibility_tree() if self.require_a11y_tree else None,
+                "terminal": self.controller.get_terminal_output() if self.require_terminal else None,
+                "instruction": self.instruction
+            }
 
     @property
     def vm_platform(self):
@@ -419,6 +464,13 @@ class DesktopEnv(gym.Env):
                     fixed_command = _fix_pyautogui_less_than_bug(action['command'])
                     self.controller.execute_python_command(fixed_command)
 
+        elif self.action_space == "android":
+            # Android actions are dicts with action_type and parameters
+            if action in ['WAIT', 'FAIL', 'DONE']:
+                pass  # Already handled above
+            else:
+                self.controller.execute_action(action)
+
         time.sleep(pause)
         observation = self._get_obs()
 
@@ -430,10 +482,12 @@ class DesktopEnv(gym.Env):
         """
 
         postconfig = self.evaluator.get("postconfig", [])
-        self.setup_controller.setup(postconfig, self.enable_proxy)
-        # Mark environment as used if there were postconfig setup operations
-        if postconfig:
-            self.is_environment_used = True
+        # Skip setup_controller for Android since it's not applicable
+        if self.setup_controller is not None:
+            self.setup_controller.setup(postconfig, self.enable_proxy)
+            # Mark environment as used if there were postconfig setup operations
+            if postconfig:
+                self.is_environment_used = True
 
         if self.evaluator['func'] == "infeasible":
             if len(self.action_history) > 0 and self.action_history[-1] == "FAIL":
